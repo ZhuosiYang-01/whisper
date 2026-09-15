@@ -1,7 +1,13 @@
 node_modules/
 .next/
+out/
 .env*.local
 .vercel/
 *.log
 .tmp-font/
-.impeccable/review/
+.impeccable/
+.npm-cache/
+.tmp-*/
+supabase/.temp/
+*.tsbuildinfo
+*.zip
