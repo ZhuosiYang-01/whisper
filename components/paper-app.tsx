@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { getAllCountries, getCountryForTimezone, getTimezone, getTimezonesForCountry } from "countries-and-timezones";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { localDate, localDateTime } from "@/lib/dates";
 
@@ -12,12 +13,8 @@ type MyContext = { username: string; timezone: string; space_id: string | null; 
 type InvitePreview = { inviter_username: string | null; invite_status: "ready" | "invalid" | "expired" | "full" };
 
 const deviceTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-const timeZoneOptions = (() => {
-  const supportedValuesOf = (Intl as typeof Intl & { supportedValuesOf?: (key: "timeZone") => string[] }).supportedValuesOf;
-  const detected = deviceTimeZone();
-  const values = supportedValuesOf ? supportedValuesOf("timeZone") : ["Asia/Shanghai", "Asia/Hong_Kong", "Asia/Tokyo", "Europe/London", "America/New_York", "America/Los_Angeles", "UTC"];
-  return values.includes(detected) ? values : [detected, ...values];
-})();
+const regionNames = new Intl.DisplayNames(["zh-CN"], { type: "region" });
+const countryOptions = Object.values(getAllCountries()).map((country) => ({ value: country.id, label: regionNames.of(country.id) ?? country.name })).sort((a, b) => a.label.localeCompare(b.label, "zh-CN"));
 
 const familiarTimeZones: Record<string, string> = {
   "Asia/Shanghai": "北京时间（北京、香港、新加坡）",
@@ -41,6 +38,14 @@ const familiarTimeZones: Record<string, string> = {
   UTC: "世界标准时间",
 };
 
+const preferredZones: Record<string, string[]> = {
+  US: ["America/New_York", "America/Chicago", "America/Denver", "America/Phoenix", "America/Los_Angeles", "America/Anchorage", "America/Adak", "Pacific/Honolulu"],
+  CA: ["America/St_Johns", "America/Halifax", "America/Toronto", "America/Winnipeg", "America/Edmonton", "America/Vancouver", "America/Whitehorse"],
+  AU: ["Australia/Sydney", "Australia/Adelaide", "Australia/Brisbane", "Australia/Darwin", "Australia/Perth", "Australia/Lord_Howe"],
+  BR: ["America/Noronha", "America/Sao_Paulo", "America/Manaus", "America/Rio_Branco"],
+  RU: ["Europe/Kaliningrad", "Europe/Moscow", "Europe/Samara", "Asia/Yekaterinburg", "Asia/Omsk", "Asia/Novosibirsk", "Asia/Irkutsk", "Asia/Yakutsk", "Asia/Vladivostok", "Asia/Magadan", "Asia/Kamchatka"],
+};
+
 function timeZoneOffset(timeZone: string, date = new Date()) {
   try {
     const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(date);
@@ -62,6 +67,24 @@ function timeZoneLabel(timeZone: string, date = new Date()) {
     const localized = new Intl.DateTimeFormat("zh-CN", { timeZone, timeZoneName: "longGeneric" }).formatToParts(date).find((part) => part.type === "timeZoneName")?.value;
     return `${familiarTimeZones[timeZone] ?? localized ?? "当地时间"}，${offsetLabel(timeZoneOffset(timeZone, date))}`;
   } catch { return familiarTimeZones[timeZone] ?? "当地时间"; }
+}
+
+function zonesForCountry(countryCode: string) {
+  const zones = getTimezonesForCountry(countryCode) ?? [];
+  const ordered = [...(preferredZones[countryCode] ?? []).map((name) => zones.find((zone) => zone.name === name)).filter(Boolean), ...zones];
+  const groups = new Map<string, string>();
+  for (const zone of ordered) {
+    if (!zone) continue;
+    const canonical = zone.aliasOf ?? zone.name;
+    const details = getTimezone(canonical) ?? zone;
+    const key = `${details.utcOffset}:${details.dstOffset}`;
+    if (!groups.has(key)) groups.set(key, canonical);
+  }
+  return [...groups.entries()].map(([key, zone]) => ({ key, zone, label: timeZoneLabel(zone) }));
+}
+
+function countryForTimeZone(timeZone: string) {
+  return getCountryForTimezone(timeZone)?.id ?? "CN";
 }
 
 function timeInZone(timeZone: string) {
@@ -232,7 +255,17 @@ function UsernameStep({ submit, login, error, clearError }: { submit: (name: str
 }
 
 function TimeZoneField({ value, onChange, label, hint }: { value: string; onChange: (value: string) => void; label: string; hint?: string }) {
-  return <label className="timezone-field"><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value)}>{timeZoneOptions.map((zone) => <option key={zone} value={zone}>{timeZoneLabel(zone)}</option>)}</select>{hint && <small>{hint}</small>}</label>;
+  const [country, setCountry] = useState<string>(() => countryForTimeZone(value));
+  const zones = zonesForCountry(country);
+  const currentDetails = getTimezone(value);
+  const currentKey = currentDetails ? `${currentDetails.utcOffset}:${currentDetails.dstOffset}` : zones[0]?.key;
+  const selectedZone = zones.find((item) => item.key === currentKey)?.zone ?? zones[0]?.zone ?? value;
+  function changeCountry(nextCountry: string) {
+    setCountry(nextCountry);
+    const nextZone = zonesForCountry(nextCountry)[0]?.zone;
+    if (nextZone) onChange(nextZone);
+  }
+  return <div className="timezone-field"><label><span>{label}</span><select value={country} onChange={(event) => changeCountry(event.target.value)}>{countryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>{zones.length > 1 && <label><span>时区</span><select value={selectedZone} onChange={(event) => onChange(event.target.value)}>{zones.map((item) => <option key={item.key} value={item.zone}>{item.label}</option>)}</select></label>}{zones.length === 1 && <p className="timezone-auto">当地时间：{zones[0].label}</p>}{hint && <small>{hint}</small>}</div>;
 }
 
 async function usernameCredentials(username: string) {
