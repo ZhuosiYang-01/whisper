@@ -19,6 +19,51 @@ const timeZoneOptions = (() => {
   return values.includes(detected) ? values : [detected, ...values];
 })();
 
+const familiarTimeZones: Record<string, string> = {
+  "Asia/Shanghai": "北京时间（北京、香港、新加坡）",
+  "Asia/Hong_Kong": "北京时间（北京、香港、新加坡）",
+  "Asia/Singapore": "北京时间（北京、香港、新加坡）",
+  "Asia/Tokyo": "日本时间（东京、大阪）",
+  "Asia/Seoul": "韩国时间（首尔）",
+  "Asia/Kolkata": "印度时间（新德里、孟买）",
+  "Asia/Dubai": "阿联酋时间（迪拜）",
+  "Europe/London": "英国时间（伦敦）",
+  "Europe/Paris": "欧洲中部时间（巴黎、柏林、罗马）",
+  "Europe/Berlin": "欧洲中部时间（巴黎、柏林、罗马）",
+  "America/New_York": "美东时间（纽约、多伦多）",
+  "America/Chicago": "美中时间（芝加哥、休斯敦）",
+  "America/Denver": "美山时间（丹佛）",
+  "America/Los_Angeles": "美西时间（洛杉矶、温哥华）",
+  "America/Anchorage": "阿拉斯加时间（安克雷奇）",
+  "Pacific/Honolulu": "夏威夷时间（檀香山）",
+  "Australia/Sydney": "澳大利亚东部时间（悉尼、墨尔本）",
+  "Pacific/Auckland": "新西兰时间（奥克兰）",
+  UTC: "世界标准时间",
+};
+
+function timeZoneOffset(timeZone: string, date = new Date()) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(date);
+    const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return Math.round((Date.UTC(Number(value.year), Number(value.month) - 1, Number(value.day), Number(value.hour), Number(value.minute), Number(value.second)) - date.getTime()) / 60000);
+  } catch { return 0; }
+}
+
+function offsetLabel(minutes: number) {
+  const sign = minutes >= 0 ? "+" : "-";
+  const absolute = Math.abs(minutes);
+  const hours = Math.floor(absolute / 60);
+  const rest = absolute % 60;
+  return `UTC${sign}${hours}${rest ? `:${String(rest).padStart(2, "0")}` : ""}`;
+}
+
+function timeZoneLabel(timeZone: string, date = new Date()) {
+  try {
+    const localized = new Intl.DateTimeFormat("zh-CN", { timeZone, timeZoneName: "longGeneric" }).formatToParts(date).find((part) => part.type === "timeZoneName")?.value;
+    return `${familiarTimeZones[timeZone] ?? localized ?? "当地时间"}，${offsetLabel(timeZoneOffset(timeZone, date))}`;
+  } catch { return familiarTimeZones[timeZone] ?? "当地时间"; }
+}
+
 function timeInZone(timeZone: string) {
   try { return new Intl.DateTimeFormat("zh-CN", { timeZone, month: "long", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date()); }
   catch { return "时区暂时无法识别"; }
@@ -187,7 +232,7 @@ function UsernameStep({ submit, login, error, clearError }: { submit: (name: str
 }
 
 function TimeZoneField({ value, onChange, label, hint }: { value: string; onChange: (value: string) => void; label: string; hint?: string }) {
-  return <label className="timezone-field"><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value)}>{timeZoneOptions.map((zone) => <option key={zone} value={zone}>{zone}</option>)}</select>{hint && <small>{hint}</small>}</label>;
+  return <label className="timezone-field"><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value)}>{timeZoneOptions.map((zone) => <option key={zone} value={zone}>{timeZoneLabel(zone)}</option>)}</select>{hint && <small>{hint}</small>}</label>;
 }
 
 async function usernameCredentials(username: string) {
@@ -227,6 +272,7 @@ function friendlyError(message: string) {
 
 function Dashboard({ partner, timezone, partnerTimezone, client }: { partner: string; timezone: string; partnerTimezone: string; client: SupabaseClient | null }) {
   const [composeOpen, setComposeOpen] = useState(false), [activeNote, setActiveNote] = useState<Note | null>(null), [unread, setUnread] = useState<UnreadNote[]>([]), [received, setReceived] = useState<Note[]>([]), [pending, setPending] = useState(0), [loadError, setLoadError] = useState("");
+  const [myTimezone, setMyTimezone] = useState(timezone);
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (activeNote) closeRef.current?.focus(); }, [activeNote]);
   useEffect(() => {
@@ -259,24 +305,25 @@ function Dashboard({ partner, timezone, partnerTimezone, client }: { partner: st
     setActiveNote(opened);
   }
   async function enableNotifications() { if (!("Notification" in window)) return alert("当前浏览器不支持通知。"); const permission = await Notification.requestPermission(); if (permission !== "granted") alert("通知没有开启，可稍后在浏览器设置中更改。"); }
-  return <main className="desk"><section className="paper" aria-label="我的纸条"><header className="masthead"><h1>纸条</h1><p>你和 <strong>{partner}</strong></p></header><aside className="summary"><p className="relationship">我们的小角落</p><h2>待发送纸条</h2><p className="pending-count"><span>{pending}</span> 条</p><div className="notification-note"><BellIcon /><div><p>打开提醒，新纸条到了就告诉你。</p><button className="text-button" onClick={enableNotifications}>去打开提醒</button><p className="ios-note">用 iPhone 的话，先在 Safari 里添加到主屏幕哦。</p></div></div></aside><div className="ledger">{loadError && <p className="dashboard-error" role="alert">{loadError}</p>}<section className="note-section"><div className="section-heading"><h2>未读纸条</h2><span>共 {unread.length} 条</span></div>{unread.length ? unread.map((note) => <div className="unread-row" key={note.id}><time dateTime={note.delivered_at}>{localDate(note.delivered_at)}</time><button className="open-button" onClick={() => void openNote(note)}>打开</button></div>) : <p className="empty-line">这里暂时空空的，晚点再来看看吧。</p>}</section><section className="note-section"><div className="section-heading"><h2>收到的纸条</h2><span>共 {received.length} 条</span></div>{received.length ? received.map((note) => <article className="received-note" key={note.id}><dl><div><dt>写下</dt><dd className="date-text">{localDate(note.created_at)}</dd></div><div><dt>送达</dt><dd className="date-text">{localDate(note.delivered_at)}</dd></div></dl><p>{note.body}</p></article>) : <p className="empty-line">打开过的纸条会留在这里。</p>}</section></div><button className="compose-tab" onClick={() => setComposeOpen(true)}><span>留一张纸条</span></button><TimeZoneSettings client={client} initialTimezone={timezone} /></section>{activeNote && <NoteDialog note={activeNote} close={() => setActiveNote(null)} closeRef={closeRef} />}{composeOpen && <ComposeDialog client={client} partner={partner} partnerTimezone={partnerTimezone} close={() => setComposeOpen(false)} sealed={() => { setPending((value) => value + 1); setComposeOpen(false); }} />}</main>;
+  return <main className="desk"><section className="paper" aria-label="我的纸条"><header className="masthead"><h1>纸条</h1><p>你和 <strong>{partner}</strong></p></header><aside className="summary"><p className="relationship">我们的小角落</p><h2>待发送纸条</h2><p className="pending-count"><span>{pending}</span> 条</p><div className="notification-note"><BellIcon /><div><p>打开提醒，新纸条到了就告诉你。</p><button className="text-button" onClick={enableNotifications}>去打开提醒</button><p className="ios-note">用 iPhone 的话，先在 Safari 里添加到主屏幕哦。</p></div></div></aside><div className="ledger">{loadError && <p className="dashboard-error" role="alert">{loadError}</p>}<section className="note-section"><div className="section-heading"><h2>未读纸条</h2><span>共 {unread.length} 条</span></div>{unread.length ? unread.map((note) => <div className="unread-row" key={note.id}><time dateTime={note.delivered_at}>{localDate(note.delivered_at)}</time><button className="open-button" onClick={() => void openNote(note)}>打开</button></div>) : <p className="empty-line">这里暂时空空的，晚点再来看看吧。</p>}</section><section className="note-section"><div className="section-heading"><h2>收到的纸条</h2><span>共 {received.length} 条</span></div>{received.length ? received.map((note) => <article className="received-note" key={note.id}><dl><div><dt>写下</dt><dd className="date-text">{localDate(note.created_at)}</dd></div><div><dt>送达</dt><dd className="date-text">{localDate(note.delivered_at)}</dd></div></dl><p>{note.body}</p></article>) : <p className="empty-line">打开过的纸条会留在这里。</p>}</section></div><button className="compose-tab" onClick={() => setComposeOpen(true)}><span>留一张纸条</span></button><TimeZoneSettings client={client} initialTimezone={myTimezone} onSaved={setMyTimezone} /></section>{activeNote && <NoteDialog note={activeNote} close={() => setActiveNote(null)} closeRef={closeRef} />}{composeOpen && <ComposeDialog client={client} partner={partner} senderTimezone={myTimezone} partnerTimezone={partnerTimezone} close={() => setComposeOpen(false)} sealed={() => { setPending((value) => value + 1); setComposeOpen(false); }} />}</main>;
 }
 
-function TimeZoneSettings({ client, initialTimezone }: { client: SupabaseClient | null; initialTimezone: string }) {
+function TimeZoneSettings({ client, initialTimezone, onSaved }: { client: SupabaseClient | null; initialTimezone: string; onSaved: (timezone: string) => void }) {
   const [timezone, setTimezone] = useState(initialTimezone), [status, setStatus] = useState("");
   async function save() {
     if (!client) return;
     setStatus("正在保存…");
     const session = (await client.auth.getSession()).data.session;
     const { error } = session ? await client.from("profiles").update({ timezone }).eq("id", session.user.id) : { error: new Error("not_signed_in") };
-    setStatus(error ? "没有保存成功，请稍后再试。" : "已保存，以后会按这个时区接收纸条。");
+    if (error) setStatus("没有保存成功，请稍后再试。");
+    else { onSaved(timezone); setStatus("已保存，以后会按这个地区的时间接收纸条。"); }
   }
-  return <section className="timezone-settings" aria-labelledby="timezone-settings-title"><div><h2 id="timezone-settings-title">我的时区</h2><p>当前时间：<span className="date-text">{timeInZone(timezone)}</span></p></div><TimeZoneField value={timezone} onChange={(value) => { setTimezone(value); setStatus(""); }} label="选择或更换时区" /><button type="button" className="timezone-save" onClick={() => void save()}>保存时区</button>{status && <p className="timezone-status" role="status">{status}</p>}</section>;
+  return <section className="timezone-settings" aria-labelledby="timezone-settings-title"><div><h2 id="timezone-settings-title">我的所在地区</h2><p>当前时间：<span className="date-text">{timeInZone(timezone)}</span></p></div><TimeZoneField value={timezone} onChange={(value) => { setTimezone(value); setStatus(""); }} label="选择或更换所在地区" /><button type="button" className="timezone-save" onClick={() => void save()}>保存地区</button>{status && <p className="timezone-status" role="status">{status}</p>}</section>;
 }
 
 function NoteDialog({ note, close, closeRef }: { note: Note; close: () => void; closeRef: React.RefObject<HTMLButtonElement | null> }) { return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && close()}><section className="note-dialog" role="dialog" aria-modal="true" aria-labelledby="note-title"><button ref={closeRef} className="close-button" onClick={close} aria-label="关闭">×</button><h2 id="note-title">纸条到啦</h2><p className="dialog-body">{note.body}</p><dl className="dialog-dates"><div><dt>写下</dt><dd className="date-text">{localDateTime(note.created_at)}</dd></div><div><dt>送达</dt><dd className="date-text">{localDateTime(note.delivered_at)}</dd></div></dl></section></div>; }
 
-function ComposeDialog({ client, partner, partnerTimezone, close, sealed }: { client: SupabaseClient | null; partner: string; partnerTimezone: string; close: () => void; sealed: () => void }) {
+function ComposeDialog({ client, partner, senderTimezone, partnerTimezone, close, sealed }: { client: SupabaseClient | null; partner: string; senderTimezone: string; partnerTimezone: string; close: () => void; sealed: () => void }) {
   const [mode, setMode] = useState<"fixed" | "random">("fixed"), [basis, setBasis] = useState<"days" | "date">("days"), [body, setBody] = useState(""), [days, setDays] = useState("0"), [date, setDate] = useState(() => new Date().toLocaleDateString("en-CA")), [time, setTime] = useState("21:30"), [randomWindow, setRandomWindow] = useState("7"), [confirming, setConfirming] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState("");
   async function send() {
     if (!client) { setError("纸条暂时没有连上，请刷新后再试。"); return; }
@@ -293,7 +340,9 @@ function ComposeDialog({ client, partner, partnerTimezone, close, sealed }: { cl
     if (sealError) { setError(friendlyError(sealError.message)); return; }
     sealed();
   }
-  return <div className="modal-backdrop"><section className="compose-dialog" role="dialog" aria-modal="true" aria-labelledby="compose-title"><button className="close-button" onClick={close} aria-label="关闭">×</button><h2 id="compose-title">留一张纸条</h2>{!confirming ? <form onSubmit={(event) => { event.preventDefault(); setConfirming(true); }}><label className="writing-field">正文<textarea required maxLength={2000} placeholder="写下想在未来抵达的话…" value={body} onChange={(event) => setBody(event.target.value)} /></label><fieldset><legend>什么时候抵达</legend><div className="mode-switch"><button type="button" aria-pressed={mode === "fixed"} onClick={() => setMode("fixed")}>按时间</button><button type="button" aria-pressed={mode === "random"} onClick={() => setMode("random")}>随机一天</button></div>{mode === "fixed" ? <div className="schedule-submenu"><p>按时间，可以这样选日期</p><div className="mode-switch schedule-basis"><button type="button" aria-pressed={basis === "days"} onClick={() => setBasis("days")}>按天数</button><button type="button" aria-pressed={basis === "date"} onClick={() => setBasis("date")}>选日期</button></div><div className="delivery-fields"><label><span>{basis === "days" ? "几天后" : "送达日期"}</span>{basis === "days" ? <input type="number" min="0" max="365" value={days} onChange={(event) => setDays(event.target.value)} required /> : <input type="date" min={new Date().toLocaleDateString("en-CA")} value={date} onChange={(event) => setDate(event.target.value)} required />}</label><label><span>在几点</span><input type="time" value={time} onChange={(event) => setTime(event.target.value)} required /></label></div><div className="partner-clock"><span>{partner} 当前时间</span><strong className="date-text">{timeInZone(partnerTimezone)}</strong><small>{partnerTimezone}</small></div><small className="timezone-hint">送达时间按照对方设置的时区计算。</small></div> : <label className="random-field"><span>时间范围</span><select value={randomWindow} onChange={(event) => setRandomWindow(event.target.value)}><option value="3">3 天内随机</option><option value="7">7 天内随机</option><option value="14">14 天内随机</option><option value="30">30 天内随机</option></select><small>具体送达时间会立即锁定，但你们都不会看到。</small></label>}</fieldset><button className="seal-button">放进时间里</button></form> : <div className="confirm-seal"><p>送出以后，就不能再偷看、修改或收回啦。</p>{error && <p className="flow-error" role="alert">{error}</p>}<div><button className="text-button" onClick={() => setConfirming(false)} disabled={busy}>我再看看</button><button className="seal-button" onClick={() => void send()} disabled={busy}>{busy ? "正在送出…" : "好，送它出发"}</button></div></div>}</section></div>;
+  const comparisonDate = basis === "date" ? new Date(`${date}T12:00:00Z`) : new Date(Date.now() + Math.max(0, Number(days) || 0) * 86400000);
+  const hasTimeDifference = timeZoneOffset(senderTimezone, comparisonDate) !== timeZoneOffset(partnerTimezone, comparisonDate);
+  return <div className="modal-backdrop"><section className="compose-dialog" role="dialog" aria-modal="true" aria-labelledby="compose-title"><button className="close-button" onClick={close} aria-label="关闭">×</button><h2 id="compose-title">留一张纸条</h2>{!confirming ? <form onSubmit={(event) => { event.preventDefault(); setConfirming(true); }}><label className="writing-field">正文<textarea required maxLength={2000} placeholder="写下想在未来抵达的话…" value={body} onChange={(event) => setBody(event.target.value)} /></label><fieldset><legend>什么时候抵达</legend><div className="mode-switch"><button type="button" aria-pressed={mode === "fixed"} onClick={() => setMode("fixed")}>按时间</button><button type="button" aria-pressed={mode === "random"} onClick={() => setMode("random")}>随机一天</button></div>{mode === "fixed" ? <div className="schedule-submenu"><p>按时间，可以这样选日期</p><div className="mode-switch schedule-basis"><button type="button" aria-pressed={basis === "days"} onClick={() => setBasis("days")}>按天数</button><button type="button" aria-pressed={basis === "date"} onClick={() => setBasis("date")}>选日期</button></div><div className="delivery-fields"><label><span>{basis === "days" ? "几天后" : "送达日期"}</span>{basis === "days" ? <input type="number" min="0" max="365" value={days} onChange={(event) => setDays(event.target.value)} required /> : <input type="date" min={new Date().toLocaleDateString("en-CA")} value={date} onChange={(event) => setDate(event.target.value)} required />}</label><label><span>在几点</span><input type="time" value={time} onChange={(event) => setTime(event.target.value)} required /></label></div>{hasTimeDifference && <><div className="partner-clock"><span>{partner} 当前时间</span><strong className="date-text">{timeInZone(partnerTimezone)}</strong><small>{timeZoneLabel(partnerTimezone)}</small></div><small className="timezone-hint">送达时间按照对方设置的所在地区计算。</small></>}</div> : <label className="random-field"><span>时间范围</span><select value={randomWindow} onChange={(event) => setRandomWindow(event.target.value)}><option value="3">3 天内随机</option><option value="7">7 天内随机</option><option value="14">14 天内随机</option><option value="30">30 天内随机</option></select><small>具体送达时间会立即锁定，但你们都不会看到。</small></label>}</fieldset><button className="seal-button">放进时间里</button></form> : <div className="confirm-seal"><p>送出以后，就不能再偷看、修改或收回啦。</p>{error && <p className="flow-error" role="alert">{error}</p>}<div><button className="text-button" onClick={() => setConfirming(false)} disabled={busy}>我再看看</button><button className="seal-button" onClick={() => void send()} disabled={busy}>{busy ? "正在送出…" : "好，送它出发"}</button></div></div>}</section></div>;
 }
 
 function BellIcon() { return <svg className="bell" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.8 10.3c0-3.4 1.7-5.5 5.2-5.5s5.2 2.1 5.2 5.5c0 4 1.7 5.2 2.3 6.1H4.5c.6-.9 2.3-2.1 2.3-6.1ZM9.8 19c.5.7 1.2 1.1 2.2 1.1s1.7-.4 2.2-1.1" /></svg>; }
