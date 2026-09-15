@@ -1,0 +1,13 @@
+{
+  "name": "纸条",
+  "short_name": "纸条",
+  "description": "把一些话，留到未来抵达。",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#e8dac5",
+  "theme_color": "#f5ead8",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

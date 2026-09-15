@@ -1,0 +1,7 @@
+project_id = "纸条"
+
+[auth]
+enable_anonymous_sign_ins = true
+
+[functions.deliver-notes]
+verify_jwt = false
