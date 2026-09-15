@@ -136,6 +136,16 @@ export function PaperApp() {
     await refreshContext();
   }
 
+  async function switchAccount() {
+    const supabase = clientRef.current;
+    setError("");
+    setInviteUrl("");
+    setContext(null);
+    if (supabase) await supabase.auth.signOut();
+    window.history.replaceState({}, "", window.location.pathname);
+    setPhase("username");
+  }
+
   async function acceptInvite() {
     const supabase = clientRef.current;
     if (!supabase || !inviteToken) return;
@@ -149,7 +159,7 @@ export function PaperApp() {
 
   if (phase === "loading") return <FlowShell><p className="flow-loading">正在铺好一张新纸……</p></FlowShell>;
   if (phase === "username") return <FlowShell><UsernameStep submit={claimUsername} login={loginUsername} error={error} clearError={() => setError("")} /></FlowShell>;
-  if (phase === "space") return <FlowShell><SpaceStep username={context?.username ?? ""} inviteUrl={inviteUrl} create={createSpace} error={error} /></FlowShell>;
+  if (phase === "space") return <FlowShell><SpaceStep username={context?.username ?? ""} inviteUrl={inviteUrl} create={createSpace} switchAccount={switchAccount} error={error} /></FlowShell>;
   if (phase === "invite") return <FlowShell><InviteStep preview={preview} accept={acceptInvite} error={error} /></FlowShell>;
   return <Dashboard partner={phase === "demo" ? "north-618" : context?.partner_username ?? "TA"} demo={phase === "demo"} />;
 }
@@ -174,12 +184,12 @@ async function usernameCredentials(username: string) {
   return { email: `paper-${key}@users.invalid`, password: `Paper-${key.slice(0, 32)}!` };
 }
 
-function SpaceStep({ username, inviteUrl, create, error }: { username: string; inviteUrl: string; create: () => Promise<void>; error: string }) {
+function SpaceStep({ username, inviteUrl, create, switchAccount, error }: { username: string; inviteUrl: string; create: () => Promise<void>; switchAccount: () => Promise<void>; error: string }) {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   async function makeSpace() { setBusy(true); await create(); setBusy(false); }
   async function copy() { await navigator.clipboard.writeText(inviteUrl); setCopied(true); }
-  return <div className="flow-content"><h1>嗨，{username}</h1>{!inviteUrl ? <><p>创建一个只属于两个人的小空间，再把邀请链接发给想一起写纸条的人。</p>{error && <p className="flow-error" role="alert">{error}</p>}<button className="flow-primary" onClick={makeSpace} disabled={busy}>{busy ? "正在准备小空间…" : "创建双人空间"}</button></> : <><p>小空间准备好啦。这个链接只能成功加入一位伙伴，有效期是 7 天。</p><div className="invite-link"><input value={inviteUrl} readOnly aria-label="邀请链接" /><button onClick={copy}>{copied ? "复制好啦" : "复制链接"}</button></div><p className="flow-aside">等对方加入后，刷新页面就能看到彼此。</p></>}</div>;
+  return <div className="flow-content"><h1>嗨，{username}</h1>{!inviteUrl ? <><p>创建一个只属于两个人的小空间，再把邀请链接发给想一起写纸条的人。</p>{error && <p className="flow-error" role="alert">{error}</p>}<button className="flow-primary" onClick={makeSpace} disabled={busy}>{busy ? "正在准备小空间…" : "创建双人空间"}</button></> : <><p>小空间准备好啦。这个链接只能成功加入一位伙伴，有效期是 7 天。</p><div className="invite-link"><input value={inviteUrl} readOnly aria-label="邀请链接" /><button onClick={copy}>{copied ? "复制好啦" : "复制链接"}</button></div><p className="flow-aside">等对方加入后，刷新页面就能看到彼此。</p></>}<button className="account-switch space-switch" type="button" onClick={switchAccount}>返回注册 / 登录</button></div>;
 }
 
 function InviteStep({ preview, accept, error }: { preview: InvitePreview | null; accept: () => Promise<void>; error: string }) {
