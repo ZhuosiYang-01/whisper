@@ -6,18 +6,10 @@ import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { localDate, localDateTime } from "@/lib/dates";
 
 type Note = { id: string; body: string; created_at: string; delivered_at: string };
-type AppPhase = "loading" | "username" | "space" | "invite" | "dashboard" | "demo";
+type UnreadNote = { id: string; delivered_at: string };
+type AppPhase = "loading" | "username" | "space" | "invite" | "dashboard";
 type MyContext = { username: string; space_id: string | null; partner_username: string | null; member_count: number };
 type InvitePreview = { inviter_username: string | null; invite_status: "ready" | "invalid" | "expired" | "full" };
-
-const demoUnread: Note[] = [
-  { id: "u1", body: "今天路过那家常去的书店，闻到旧书的味道，忽然就想起你。生活好像也没那么拥挤，只要想到你在，就觉得安心了。", created_at: "2026-08-28T14:20:00Z", delivered_at: "2026-09-03T12:00:00Z" },
-  { id: "u2", body: "有一件小事，等见面的时候再慢慢告诉你。", created_at: "2026-08-30T18:40:00Z", delivered_at: "2026-09-02T12:00:00Z" },
-];
-const demoReceived: Note[] = [
-  { id: "r1", body: "谢谢你那天等我。", created_at: "2026-08-25T14:20:00Z", delivered_at: "2026-08-30T12:00:00Z" },
-  { id: "r2", body: "最近在学做早餐，虽然卖相一般，但味道还不错。等你回来一起吃。", created_at: "2026-08-18T18:10:00Z", delivered_at: "2026-08-27T12:00:00Z" },
-];
 
 export function PaperApp() {
   const [phase, setPhase] = useState<AppPhase>("loading");
@@ -33,7 +25,7 @@ export function PaperApp() {
     const search = new URLSearchParams(window.location.search);
     const token = search.get("invite") ?? "";
     setInviteToken(token);
-    if (!isSupabaseConfigured()) { setPhase(search.get("preview") === "signup" ? "username" : "demo"); return; }
+    if (!isSupabaseConfigured()) { setPhase("username"); return; }
     const supabase = createClient();
     clientRef.current = supabase;
     void initialize(supabase, token);
@@ -161,7 +153,7 @@ export function PaperApp() {
   if (phase === "username") return <FlowShell><UsernameStep submit={claimUsername} login={loginUsername} error={error} clearError={() => setError("")} /></FlowShell>;
   if (phase === "space") return <FlowShell><SpaceStep username={context?.username ?? ""} inviteUrl={inviteUrl} create={createSpace} switchAccount={switchAccount} error={error} /></FlowShell>;
   if (phase === "invite") return <FlowShell><InviteStep preview={preview} accept={acceptInvite} error={error} /></FlowShell>;
-  return <Dashboard partner={phase === "demo" ? "north-618" : context?.partner_username ?? "TA"} demo={phase === "demo"} />;
+  return <Dashboard partner={context?.partner_username ?? "TA"} client={clientRef.current} />;
 }
 
 function FlowShell({ children }: { children: React.ReactNode }) {
@@ -207,20 +199,68 @@ function friendlyError(message: string) {
   if (message.includes("invite_invalid")) return "邀请已失效，请让对方重新发一个。";
   if (message.includes("space_full")) return "这个小空间已经住满两个人啦。";
   if (message.includes("already_bound")) return "你已经加入另一个双人空间了。";
+  if (message.includes("delivery_in_past")) return "这个时间已经过去了，请换一个稍晚的时间。";
+  if (message.includes("invalid_delivery_rule")) return "送达时间没有填完整，请再检查一下。";
   return "刚刚没成功，请检查网络后再试一次。";
 }
 
-function Dashboard({ partner, demo }: { partner: string; demo: boolean }) {
-  const [composeOpen, setComposeOpen] = useState(false), [activeNote, setActiveNote] = useState<Note | null>(null), [unread, setUnread] = useState(demoUnread), [received, setReceived] = useState(demoReceived), [pending, setPending] = useState(2);
+function Dashboard({ partner, client }: { partner: string; client: SupabaseClient | null }) {
+  const [composeOpen, setComposeOpen] = useState(false), [activeNote, setActiveNote] = useState<Note | null>(null), [unread, setUnread] = useState<UnreadNote[]>([]), [received, setReceived] = useState<Note[]>([]), [pending, setPending] = useState(0), [loadError, setLoadError] = useState("");
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (activeNote) closeRef.current?.focus(); }, [activeNote]);
-  function openNote(note: Note) { setUnread((items) => items.filter((item) => item.id !== note.id)); setReceived((items) => [note, ...items]); setActiveNote(note); }
+  useEffect(() => {
+    if (!client) return;
+    let cancelled = false;
+    async function load() {
+      const [pendingResult, unreadResult, receivedResult] = await Promise.all([
+        client!.rpc("pending_note_count"),
+        client!.rpc("unread_note_index"),
+        client!.from("notes").select("id, body, created_at, delivered_at").eq("status", "opened").order("delivered_at", { ascending: false }),
+      ]);
+      if (cancelled) return;
+      const firstError = pendingResult.error ?? unreadResult.error ?? receivedResult.error;
+      if (firstError) { setLoadError("纸条暂时没有读出来，请刷新再试。"); return; }
+      setPending(Number(pendingResult.data ?? 0));
+      setUnread((unreadResult.data ?? []) as UnreadNote[]);
+      setReceived((receivedResult.data ?? []) as Note[]);
+    }
+    void load();
+    return () => { cancelled = true; };
+  }, [client]);
+  async function openNote(note: UnreadNote) {
+    if (!client) return;
+    setLoadError("");
+    const { data, error } = await client.rpc("open_note", { note_id: note.id });
+    const opened = Array.isArray(data) ? data[0] as Note | undefined : undefined;
+    if (error || !opened) { setLoadError("这张纸条暂时打不开，请稍后再试。"); return; }
+    setUnread((items) => items.filter((item) => item.id !== note.id));
+    setReceived((items) => [opened, ...items.filter((item) => item.id !== opened.id)]);
+    setActiveNote(opened);
+  }
   async function enableNotifications() { if (!("Notification" in window)) return alert("当前浏览器不支持通知。"); const permission = await Notification.requestPermission(); if (permission !== "granted") alert("通知没有开启，可稍后在浏览器设置中更改。"); }
-  return <main className="desk"><section className="paper" aria-label="我的纸条"><header className="masthead"><h1>纸条</h1><p>你和 <strong>{partner}</strong></p></header><aside className="summary"><p className="relationship">我们的小角落</p><h2>待发送纸条</h2><p className="pending-count"><span>{pending}</span> 条</p><div className="notification-note"><BellIcon /><div><p>打开提醒，新纸条到了就告诉你。</p><button className="text-button" onClick={enableNotifications}>去打开提醒</button><p className="ios-note">用 iPhone 的话，先在 Safari 里添加到主屏幕哦。</p></div></div>{demo && <p className="prototype-note">这里展示的是原型小纸条</p>}</aside><div className="ledger"><section className="note-section"><div className="section-heading"><h2>未读纸条</h2><span>共 {unread.length} 条</span></div>{unread.length ? unread.map((note) => <div className="unread-row" key={note.id}><time dateTime={note.delivered_at}>{localDate(note.delivered_at)}</time><button className="open-button" onClick={() => openNote(note)}>打开</button></div>) : <p className="empty-line">这里暂时空空的，晚点再来看看吧。</p>}</section><section className="note-section"><div className="section-heading"><h2>收到的纸条</h2><span>共 {received.length} 条</span></div>{received.map((note) => <article className="received-note" key={note.id}><dl><div><dt>写下</dt><dd className="date-text">{localDate(note.created_at)}</dd></div><div><dt>送达</dt><dd className="date-text">{localDate(note.delivered_at)}</dd></div></dl><p>{note.body}</p></article>)}</section></div><button className="compose-tab" onClick={() => setComposeOpen(true)}><span>留一张纸条给 TA</span></button></section>{activeNote && <NoteDialog note={activeNote} close={() => setActiveNote(null)} closeRef={closeRef} />}{composeOpen && <ComposeDialog close={() => setComposeOpen(false)} sealed={() => { setPending((value) => value + 1); setComposeOpen(false); }} />}</main>;
+  return <main className="desk"><section className="paper" aria-label="我的纸条"><header className="masthead"><h1>纸条</h1><p>你和 <strong>{partner}</strong></p></header><aside className="summary"><p className="relationship">我们的小角落</p><h2>待发送纸条</h2><p className="pending-count"><span>{pending}</span> 条</p><div className="notification-note"><BellIcon /><div><p>打开提醒，新纸条到了就告诉你。</p><button className="text-button" onClick={enableNotifications}>去打开提醒</button><p className="ios-note">用 iPhone 的话，先在 Safari 里添加到主屏幕哦。</p></div></div></aside><div className="ledger">{loadError && <p className="dashboard-error" role="alert">{loadError}</p>}<section className="note-section"><div className="section-heading"><h2>未读纸条</h2><span>共 {unread.length} 条</span></div>{unread.length ? unread.map((note) => <div className="unread-row" key={note.id}><time dateTime={note.delivered_at}>{localDate(note.delivered_at)}</time><button className="open-button" onClick={() => void openNote(note)}>打开</button></div>) : <p className="empty-line">这里暂时空空的，晚点再来看看吧。</p>}</section><section className="note-section"><div className="section-heading"><h2>收到的纸条</h2><span>共 {received.length} 条</span></div>{received.length ? received.map((note) => <article className="received-note" key={note.id}><dl><div><dt>写下</dt><dd className="date-text">{localDate(note.created_at)}</dd></div><div><dt>送达</dt><dd className="date-text">{localDate(note.delivered_at)}</dd></div></dl><p>{note.body}</p></article>) : <p className="empty-line">打开过的纸条会留在这里。</p>}</section></div><button className="compose-tab" onClick={() => setComposeOpen(true)}><span>留一张纸条</span></button></section>{activeNote && <NoteDialog note={activeNote} close={() => setActiveNote(null)} closeRef={closeRef} />}{composeOpen && <ComposeDialog client={client} partner={partner} close={() => setComposeOpen(false)} sealed={() => { setPending((value) => value + 1); setComposeOpen(false); }} />}</main>;
 }
 
 function NoteDialog({ note, close, closeRef }: { note: Note; close: () => void; closeRef: React.RefObject<HTMLButtonElement | null> }) { return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && close()}><section className="note-dialog" role="dialog" aria-modal="true" aria-labelledby="note-title"><button ref={closeRef} className="close-button" onClick={close} aria-label="关闭">×</button><h2 id="note-title">纸条到啦</h2><p className="dialog-body">{note.body}</p><dl className="dialog-dates"><div><dt>写下</dt><dd className="date-text">{localDateTime(note.created_at)}</dd></div><div><dt>送达</dt><dd className="date-text">{localDateTime(note.delivered_at)}</dd></div></dl></section></div>; }
 
-function ComposeDialog({ close, sealed }: { close: () => void; sealed: () => void }) { const [mode, setMode] = useState<"fixed" | "random">("fixed"), [confirming, setConfirming] = useState(false); return <div className="modal-backdrop"><section className="compose-dialog" role="dialog" aria-modal="true" aria-labelledby="compose-title"><button className="close-button" onClick={close} aria-label="关闭">×</button><h2 id="compose-title">留一张纸条给 TA</h2>{!confirming ? <form onSubmit={(event) => { event.preventDefault(); setConfirming(true); }}><label className="writing-field">正文<textarea required maxLength={2000} placeholder="写下想在未来抵达的话…" /></label><fieldset><legend>什么时候抵达</legend><div className="mode-switch"><button type="button" aria-pressed={mode === "fixed"} onClick={() => setMode("fixed")}>按时间</button><button type="button" aria-pressed={mode === "random"} onClick={() => setMode("random")}>随机一天</button></div>{mode === "fixed" ? <div className="delivery-fields"><label><span>几天后</span><input type="number" min="1" max="365" defaultValue="3" /></label><label><span>在几点</span><input type="time" defaultValue="21:30" /></label></div> : <label className="random-field"><span>时间范围</span><select defaultValue="7"><option value="3">3 天内随机</option><option value="7">7 天内随机</option><option value="14">14 天内随机</option><option value="30">30 天内随机</option></select><small>具体送达时间会立即锁定，但你们都不会看到。</small></label>}</fieldset><button className="seal-button">放进时间里</button></form> : <div className="confirm-seal"><p>送出以后，就不能再偷看、修改或收回啦。</p><div><button className="text-button" onClick={() => setConfirming(false)}>我再看看</button><button className="seal-button" onClick={sealed}>好，送它出发</button></div></div>}</section></div>; }
+function ComposeDialog({ client, partner, close, sealed }: { client: SupabaseClient | null; partner: string; close: () => void; sealed: () => void }) {
+  const [mode, setMode] = useState<"fixed" | "random">("fixed"), [basis, setBasis] = useState<"days" | "date">("days"), [body, setBody] = useState(""), [days, setDays] = useState("0"), [date, setDate] = useState(() => new Date().toLocaleDateString("en-CA")), [time, setTime] = useState("21:30"), [randomWindow, setRandomWindow] = useState("7"), [confirming, setConfirming] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  async function send() {
+    if (!client) { setError("纸条暂时没有连上，请刷新后再试。"); return; }
+    setBusy(true); setError("");
+    const { error: sealError } = await client.rpc("seal_note", {
+      note_body: body,
+      kind: mode,
+      days_after: mode === "fixed" && basis === "days" ? Number(days) : null,
+      delivery_date: mode === "fixed" && basis === "date" ? date : null,
+      local_time: mode === "fixed" ? time : null,
+      random_window: mode === "random" ? Number(randomWindow) : null,
+    });
+    setBusy(false);
+    if (sealError) { setError(friendlyError(sealError.message)); return; }
+    sealed();
+  }
+  return <div className="modal-backdrop"><section className="compose-dialog" role="dialog" aria-modal="true" aria-labelledby="compose-title"><button className="close-button" onClick={close} aria-label="关闭">×</button><h2 id="compose-title">留一张纸条</h2>{!confirming ? <form onSubmit={(event) => { event.preventDefault(); setConfirming(true); }}><label className="writing-field">正文<textarea required maxLength={2000} placeholder="写下想在未来抵达的话…" value={body} onChange={(event) => setBody(event.target.value)} /></label><fieldset><legend>什么时候抵达</legend><div className="mode-switch"><button type="button" aria-pressed={mode === "fixed"} onClick={() => setMode("fixed")}>按时间</button><button type="button" aria-pressed={mode === "random"} onClick={() => setMode("random")}>随机一天</button></div>{mode === "fixed" ? <><div className="mode-switch schedule-basis"><button type="button" aria-pressed={basis === "days"} onClick={() => setBasis("days")}>按天数</button><button type="button" aria-pressed={basis === "date"} onClick={() => setBasis("date")}>选日期</button></div><div className="delivery-fields"><label><span>{basis === "days" ? "几天后" : "送达日期"}</span>{basis === "days" ? <input type="number" min="0" max="365" value={days} onChange={(event) => setDays(event.target.value)} required /> : <input type="date" min={new Date().toLocaleDateString("en-CA")} value={date} onChange={(event) => setDate(event.target.value)} required />}</label><label><span>在几点</span><input type="time" value={time} onChange={(event) => setTime(event.target.value)} required /></label></div><small className="timezone-hint">按照 {partner} 最近一次打开纸条时自动识别的设备时区抵达。</small></> : <label className="random-field"><span>时间范围</span><select value={randomWindow} onChange={(event) => setRandomWindow(event.target.value)}><option value="3">3 天内随机</option><option value="7">7 天内随机</option><option value="14">14 天内随机</option><option value="30">30 天内随机</option></select><small>具体送达时间会立即锁定，但你们都不会看到。</small></label>}</fieldset><button className="seal-button">放进时间里</button></form> : <div className="confirm-seal"><p>送出以后，就不能再偷看、修改或收回啦。</p>{error && <p className="flow-error" role="alert">{error}</p>}<div><button className="text-button" onClick={() => setConfirming(false)} disabled={busy}>我再看看</button><button className="seal-button" onClick={() => void send()} disabled={busy}>{busy ? "正在送出…" : "好，送它出发"}</button></div></div>}</section></div>;
+}
 
 function BellIcon() { return <svg className="bell" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.8 10.3c0-3.4 1.7-5.5 5.2-5.5s5.2 2.1 5.2 5.5c0 4 1.7 5.2 2.3 6.1H4.5c.6-.9 2.3-2.1 2.3-6.1ZM9.8 19c.5.7 1.2 1.1 2.2 1.1s1.7-.4 2.2-1.1" /></svg>; }
