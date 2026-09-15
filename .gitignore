@@ -3,6 +3,7 @@ node_modules/
 out/
 .env*.local
 .vercel/
+.wrangler/
 *.log
 .tmp-font/
 .impeccable/

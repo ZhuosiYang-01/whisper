@@ -35,13 +35,12 @@ npm run dev
 
 `public/sw.js` 提供基础离线壳和固定通知文案。iPhone 上需用 Safari 添加到主屏幕后，再从已安装的 PWA 内授权通知。生产接入还需用 `pushManager.subscribe()` 将订阅写入 `push_subscriptions`，前端界面已保留通知授权入口。
 
-## Cloudflare Pages 部署
+## Cloudflare 部署
 
-在 Cloudflare Pages 中连接本仓库，使用以下构建设置：
+在 Cloudflare Workers & Pages 中导入本仓库，使用以下构建设置：
 
 - 生产分支：`main`
-- 框架预设：`Next.js (Static HTML Export)`
 - 构建命令：`npm run build`
-- 构建输出目录：`out`
+- 部署命令：`npx wrangler deploy`
 
-在 Pages 项目的环境变量中配置 `NEXT_PUBLIC_SUPABASE_URL` 和 `NEXT_PUBLIC_SUPABASE_ANON_KEY`。它们会在构建时写入前端产物，不要配置 Service Role Key 或其他私密密钥。
+`wrangler.jsonc` 会将构建生成的 `out` 目录作为静态网站发布。在项目的构建环境变量中配置 `NEXT_PUBLIC_SUPABASE_URL` 和 `NEXT_PUBLIC_SUPABASE_ANON_KEY`。它们会在构建时写入前端产物，不要配置 Service Role Key 或其他私密密钥。
