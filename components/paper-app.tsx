@@ -398,22 +398,25 @@ function ReceivedFeed({ notes }: { notes: Note[] }) {
   const tweenRef = useRef<gsap.core.Tween | null>(null);
   const dragRef = useRef<{ id: number; startY: number; startPosition: number; lastY: number; lastTime: number; velocity: number; moved: boolean } | null>(null);
   const suppressClickRef = useRef(false);
-  const wheelLockRef = useRef(0);
+  const wheelTargetRef = useRef<number | null>(null);
+  const wheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countRef = useRef(0);
   const [active, setActive] = useState(() => Math.max(0, orderedNotes.length - 1));
 
   const layout = useCallback((position: number) => {
     const root = rootRef.current;
     if (!root) return;
     const compact = root.clientWidth < 620;
-    const spreadX = compact ? 46 : 90;
-    const readingGap = compact ? 214 : 240;
-    const stackGap = compact ? 37 : 44;
+    const spreadX = compact ? 40 : 76;
+    const readingGap = compact ? 158 : 182;
+    const stackGap = compact ? 32 : 38;
     cardRefs.current.forEach((card, index) => {
       if (!card) return;
       const distance = index - position;
       const distanceAbs = Math.abs(distance);
       const x = Math.sin(distance * .65) * spreadX;
-      const y = Math.sign(distance) * (Math.min(1, distanceAbs) * readingGap + Math.max(0, distanceAbs - 1) * stackGap);
+      // A continuous curve keeps speed smooth between the reading window and the stack.
+      const y = distance * stackGap + Math.tanh(distance * 1.6) * (readingGap - stackGap);
       const z = -distanceAbs * 8;
       const rotateY = Math.sin(distance * .65) * (compact ? -3 : -5);
       const rotateZ = Math.sin(distance * .65) * 2;
@@ -421,7 +424,6 @@ function ReceivedFeed({ notes }: { notes: Note[] }) {
       const scale = Math.max(.26, Math.exp(-distanceAbs * .30));
       card.style.transform = `translate(-50%, -50%) translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, ${z.toFixed(2)}px) rotateY(${rotateY.toFixed(2)}deg) rotateZ(${rotateZ.toFixed(2)}deg) scale(${scale.toFixed(3)})`;
       card.style.opacity = visible ? String(Math.max(0, 1 - distanceAbs * 0.12)) : "0";
-      card.style.filter = `saturate(${Math.max(0.42, 1 - distanceAbs * 0.13).toFixed(3)}) brightness(${Math.min(1.16, 1 + distanceAbs * 0.035).toFixed(3)}) blur(${Math.min(3.8, distanceAbs * 0.78).toFixed(2)}px)`;
       card.style.zIndex = String(100 - Math.round(distanceAbs * 5));
       card.style.pointerEvents = visible ? "auto" : "none";
       card.style.setProperty("--depth-tint", Math.min(0.48, distanceAbs * 0.14).toFixed(3));
@@ -440,18 +442,18 @@ function ReceivedFeed({ notes }: { notes: Note[] }) {
       ease: "power3.out",
       overwrite: true,
       onUpdate: () => { positionRef.current = proxy.value; layout(proxy.value); },
-      onComplete: () => { positionRef.current = target; layout(target); },
+      onComplete: () => { positionRef.current = target; layout(target); setActive(Math.round(target)); },
     });
-    setActive(target);
   }, [layout, orderedNotes.length]);
 
   useEffect(() => {
     cardRefs.current = cardRefs.current.slice(0, orderedNotes.length);
-    const safeIndex = Math.min(active, Math.max(0, orderedNotes.length - 1));
+    const safeIndex = countRef.current === 0 ? Math.max(0, orderedNotes.length - 1) : Math.min(positionRef.current, Math.max(0, orderedNotes.length - 1));
+    countRef.current = orderedNotes.length;
     positionRef.current = safeIndex;
-    setActive(safeIndex);
+    setActive(Math.round(safeIndex));
     layout(safeIndex);
-  }, [active, layout, orderedNotes.length]);
+  }, [layout, orderedNotes.length]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -463,18 +465,20 @@ function ReceivedFeed({ notes }: { notes: Note[] }) {
 
   useEffect(() => {
     const root = rootRef.current;
-    if (!root || orderedNotes.length < 2) return;
+    if (!root || !orderedNotes.length) return;
     const handleWheel = (event: WheelEvent) => {
+      if (event.ctrlKey) return;
       event.preventDefault();
-      const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
-      if (Math.abs(delta) < 10) return;
-      const now = performance.now();
-      if (now < wheelLockRef.current) return;
-      wheelLockRef.current = now + 280;
-      goTo(Math.round(positionRef.current) + (delta > 0 ? 1 : -1));
+      const units = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? root.clientHeight : 1;
+      const delta = (Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX) * units;
+      const target = Math.max(0, Math.min(orderedNotes.length - 1, (wheelTargetRef.current ?? positionRef.current) + delta / 180));
+      wheelTargetRef.current = target;
+      goTo(target);
+      if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current);
+      wheelTimerRef.current = setTimeout(() => { wheelTargetRef.current = null; goTo(Math.round(target)); }, 140);
     };
     root.addEventListener("wheel", handleWheel, { passive: false });
-    return () => root.removeEventListener("wheel", handleWheel);
+    return () => { root.removeEventListener("wheel", handleWheel); if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current); wheelTargetRef.current = null; };
   }, [goTo, orderedNotes.length]);
 
   const endDrag = useCallback(() => {
@@ -484,7 +488,8 @@ function ReceivedFeed({ notes }: { notes: Note[] }) {
     if (!drag.moved) return;
     suppressClickRef.current = true;
     window.setTimeout(() => { suppressClickRef.current = false; }, 0);
-    const projected = positionRef.current - drag.velocity * 210 / Math.max(150, (rootRef.current?.clientHeight ?? 520) * 0.36);
+    const velocity = performance.now() - drag.lastTime > 90 ? 0 : drag.velocity;
+    const projected = positionRef.current - Math.max(-2, Math.min(2, velocity)) * 140 / 180;
     goTo(Math.round(projected));
   }, [goTo]);
 
@@ -504,20 +509,22 @@ function ReceivedFeed({ notes }: { notes: Note[] }) {
       onPointerDown={(event) => {
         if (dragRef.current) return;
         suppressClickRef.current = false;
+        if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current);
+        wheelTargetRef.current = null;
         tweenRef.current?.kill();
         dragRef.current = { id: event.pointerId, startY: event.clientY, startPosition: positionRef.current, lastY: event.clientY, lastTime: performance.now(), velocity: 0, moved: false };
       }}
       onPointerMove={(event) => {
         const drag = dragRef.current;
-        if (!drag) return;
+        if (!drag || drag.id !== event.pointerId) return;
         const delta = event.clientY - drag.startY;
         if (!drag.moved && Math.abs(delta) > 10) { drag.moved = true; event.currentTarget.setPointerCapture(drag.id); }
         if (!drag.moved) return;
         const now = performance.now();
-        drag.velocity = (event.clientY - drag.lastY) / Math.max(1, now - drag.lastTime);
+        drag.velocity = drag.velocity * .65 + (event.clientY - drag.lastY) / Math.max(1, now - drag.lastTime) * .35;
         drag.lastY = event.clientY;
         drag.lastTime = now;
-        const step = Math.max(150, event.currentTarget.clientHeight * 0.36);
+        const step = 180;
         const raw = drag.startPosition - delta / step;
         const min = raw < 0 ? raw * 0.24 : raw;
         const max = min > orderedNotes.length - 1 ? orderedNotes.length - 1 + (min - orderedNotes.length + 1) * 0.24 : min;
