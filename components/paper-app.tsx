@@ -1,6 +1,9 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import gsap from "gsap";
+import "./received-stack.css";
+import { UnreadFolder as UnreadDrawer } from "./unread-folder";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAllCountries, getCountryForTimezone, getTimezone, getTimezonesForCountry } from "countries-and-timezones";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -11,6 +14,19 @@ type UnreadNote = { id: string; delivered_at: string };
 type AppPhase = "loading" | "username" | "space" | "invite" | "dashboard";
 type MyContext = { username: string; timezone: string; space_id: string | null; partner_username: string | null; partner_timezone: string | null; member_count: number };
 type InvitePreview = { inviter_username: string | null; invite_status: "ready" | "invalid" | "expired" | "full" };
+
+const sisiMockNotes: Note[] = [
+  ["mock-unread-01", "今天路过一家很可爱的小店，下次想和你一起去。", "2026-09-15T13:10:00Z"],
+  ["mock-unread-02", "记得好好吃饭，也记得偶尔偷个懒。", "2026-09-14T16:20:00Z"],
+  ["mock-unread-03", "刚刚看到一朵很像小兔子的云。", "2026-09-13T11:30:00Z"],
+  ["mock-unread-04", "今天的晚风很好，想分一半给你。", "2026-09-12T18:40:00Z"],
+  ["mock-unread-05", "有一件开心的小事，见面的时候告诉你。", "2026-09-11T09:15:00Z"],
+  ["mock-unread-06", "辛苦啦，今天也已经做得很好了。", "2026-09-10T14:50:00Z"],
+  ["mock-unread-07", "下雨的时候突然很想和你一起散步。", "2026-09-09T10:05:00Z"],
+  ["mock-unread-08", "给你留一颗今天份的小星星。", "2026-09-08T20:10:00Z"],
+  ["mock-unread-09", "最近听到一首很好听的歌，想分享给你。", "2026-09-07T12:25:00Z"],
+  ["mock-unread-10", "等忙完这一阵，我们一起去吃点好吃的吧。", "2026-09-06T15:35:00Z"],
+].map(([id, body, delivered_at], index) => ({ id, body, delivered_at, created_at: new Date(new Date(delivered_at).getTime() - (index + 1) * 86400000).toISOString() }));
 
 const deviceTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const regionNames = new Intl.DisplayNames(["zh-CN"], { type: "region" });
@@ -102,7 +118,8 @@ export function PaperApp() {
   const clientRef = useRef<SupabaseClient | null>(null);
 
   useEffect(() => {
-    navigator.serviceWorker?.register("/sw.js");
+    if (process.env.NODE_ENV === "production") navigator.serviceWorker?.register("/sw.js");
+    else navigator.serviceWorker?.getRegistrations().then((registrations) => registrations.forEach((registration) => registration.unregister()));
     const search = new URLSearchParams(window.location.search);
     const token = search.get("invite") ?? "";
     setInviteToken(token);
@@ -237,7 +254,7 @@ export function PaperApp() {
   if (phase === "username") return <FlowShell><UsernameStep submit={claimUsername} login={loginUsername} error={error} clearError={() => setError("")} /></FlowShell>;
   if (phase === "space") return <FlowShell><SpaceStep username={context?.username ?? ""} inviteUrl={inviteUrl} create={createSpace} switchAccount={switchAccount} error={error} /></FlowShell>;
   if (phase === "invite") return <FlowShell><InviteStep preview={preview} accept={acceptInvite} error={error} /></FlowShell>;
-  return <Dashboard partner={context?.partner_username ?? "TA"} timezone={context?.timezone ?? deviceTimeZone()} partnerTimezone={context?.partner_timezone ?? "UTC"} client={clientRef.current} />;
+  return <Dashboard username={context?.username ?? ""} partner={context?.partner_username ?? "TA"} timezone={context?.timezone ?? deviceTimeZone()} partnerTimezone={context?.partner_timezone ?? "UTC"} client={clientRef.current} />;
 }
 
 function FlowShell({ children }: { children: React.ReactNode }) {
@@ -303,11 +320,238 @@ function friendlyError(message: string) {
   return "刚刚没成功，请检查网络后再试一次。";
 }
 
-function Dashboard({ partner, timezone, partnerTimezone, client }: { partner: string; timezone: string; partnerTimezone: string; client: SupabaseClient | null }) {
+const paperKinds = ["envelope", "note", "torn", "parcel"] as const;
+
+function LegacyUnreadDrawer({ notes, open }: { notes: UnreadNote[]; open: (note: UnreadNote) => void }) {
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const bounceRef = useRef<HTMLDivElement>(null);
+  const cardRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const swipeRef = useRef<{ id: number; startX: number; moved: boolean } | null>(null);
+  const suppressTapRef = useRef(false);
+  const [activeCard, setActiveCard] = useState(0);
+  const visibleNotes = notes.slice(0, 10);
+  useEffect(() => { setActiveCard((current) => Math.min(current, Math.max(0, visibleNotes.length - 1))); }, [visibleNotes.length]);
+  const cardTransforms = useMemo(() => {
+    return visibleNotes.map((_, index) => {
+      const distance = index - activeCard;
+      const scale = Math.max(0.76, 1 - Math.abs(distance) * 0.045);
+      return `translate(-50%, 0) translateX(${(distance * 27).toFixed(1)}px) translateY(${(-88 + Math.abs(distance) * 7).toFixed(1)}px) rotate(${(distance * 4.5).toFixed(1)}deg) scale(${scale.toFixed(3)})`;
+    });
+  }, [activeCard, visibleNotes.length]);
+  useEffect(() => {
+    if (!drawerOpen || !bounceRef.current) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const cards = cardRefs.current.filter(Boolean);
+    gsap.set(cards, { transform: "translate(-50%, 10%) scale(0.94)", opacity: 0 });
+    let animation: gsap.core.Tween | undefined;
+    const frame = window.requestAnimationFrame(() => {
+      animation = gsap.to(cards, { transform: (index) => cardTransforms[index], opacity: 1, stagger: reduceMotion ? 0 : 0.045, duration: reduceMotion ? 0.12 : 0.28, ease: reduceMotion ? "power3.out" : "back.out(1.4)", overwrite: true });
+    });
+    return () => { window.cancelAnimationFrame(frame); animation?.kill(); };
+  }, [drawerOpen, visibleNotes.length]);
+  function toggleFolder() {
+    setDrawerOpen((value) => !value);
+  }
+  function pushCards(hoveredIndex: number) {
+    if (!drawerOpen || !window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    cardRefs.current.forEach((card, index) => {
+      if (!card) return;
+      gsap.killTweensOf(card);
+      const base = cardTransforms[index] ?? "none";
+      const transform = index === hoveredIndex ? base.replace(/rotate\([\s\S]*?\)/, "rotate(0deg)") : `${base} translateX(${index < hoveredIndex ? -42 : 42}px)`;
+      gsap.to(card, { transform, scale: index === hoveredIndex ? 1.08 : 1, duration: 0.24, ease: "back.out(1.4)", overwrite: "auto" });
+    });
+  }
+  function resetCards() {
+    cardRefs.current.forEach((card, index) => {
+      if (!card) return;
+      gsap.killTweensOf(card);
+      gsap.to(card, { transform: cardTransforms[index] ?? "none", scale: 1, duration: 0.24, ease: "back.out(1.4)", overwrite: "auto" });
+    });
+  }
+  function openCard(note: UnreadNote, index: number) {
+    if (suppressTapRef.current) return;
+    const card = cardRefs.current[index];
+    if (!card || window.matchMedia("(prefers-reduced-motion: reduce)").matches) { open(note); return; }
+    gsap.killTweensOf(card);
+    card.style.zIndex = "40";
+    gsap.to(card, { transform: "translate(-50%, 0) translateY(-108px) rotate(0deg) scale(1.28)", duration: 0.2, ease: "power3.out", overwrite: true, onComplete: () => open(note) });
+  }
+  return <section className="unread-folder react-bits-folder-section" aria-labelledby="unread-title" data-open={drawerOpen}>
+    <div className="folder-heading"><div><h2 id="unread-title">未读纸条</h2><p>{notes.length ? `有${notes.length}张没看过的纸条` : "暂时空空的"}</p></div></div>
+    <div className={`react-folder ${drawerOpen ? "open" : ""}`}>
+      <div className="react-folder-back">
+        <div className="react-folder-papers bounce-cards" ref={bounceRef} id="unread-folder-content" aria-hidden={!drawerOpen} onMouseLeave={resetCards} onPointerDown={(event) => { if (!drawerOpen || swipeRef.current) return; swipeRef.current = { id: event.pointerId, startX: event.clientX, moved: false }; }} onPointerMove={(event) => { const swipe = swipeRef.current; if (!swipe || swipe.id !== event.pointerId) return; if (Math.abs(event.clientX - swipe.startX) > 10) { swipe.moved = true; event.currentTarget.setPointerCapture(event.pointerId); } }} onPointerUp={(event) => { const swipe = swipeRef.current; swipeRef.current = null; if (!swipe || !swipe.moved) return; const delta = event.clientX - swipe.startX; if (Math.abs(delta) > 34) setActiveCard((current) => Math.min(visibleNotes.length - 1, Math.max(0, current + (delta < 0 ? 1 : -1)))); suppressTapRef.current = true; window.setTimeout(() => { suppressTapRef.current = false; }, 0); }} onPointerCancel={() => { swipeRef.current = null; }}>{visibleNotes.map((note, index) => <button key={note.id} ref={(element) => { cardRefs.current[index] = element; }} className={`react-folder-paper bounce-card${index === activeCard ? " is-active" : ""}`} type="button" tabIndex={drawerOpen ? 0 : -1} onMouseEnter={() => pushCards(index)} onClick={() => openCard(note, index)} style={{ transform: drawerOpen ? cardTransforms[index] : "translate(-50%, 10%)", zIndex: 20 - Math.abs(index - activeCard) }} aria-label={`打开 ${localDate(note.delivered_at)} 收到的纸条`}><time dateTime={note.delivered_at}>{localDate(note.delivered_at)}</time></button>)}</div>
+        <span className="react-folder-front" aria-hidden="true" />
+        <span className="react-folder-front right" aria-hidden="true" />
+        <button className="react-folder-toggle" type="button" onClick={toggleFolder} aria-expanded={drawerOpen} aria-controls="unread-folder-content" aria-label={drawerOpen ? "合上未读纸条文件夹" : "打开未读纸条文件夹"} />
+      </div>
+    </div>
+  </section>;
+}
+
+function ReceivedFeed({ notes }: { notes: Note[] }) {
+  const orderedNotes = useMemo(() => [...notes].sort((a, b) => new Date(a.delivered_at).getTime() - new Date(b.delivered_at).getTime()), [notes]);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const cardRefs = useRef<(HTMLElement | null)[]>([]);
+  const positionRef = useRef(0);
+  const tweenRef = useRef<gsap.core.Tween | null>(null);
+  const dragRef = useRef<{ id: number; startY: number; startPosition: number; lastY: number; lastTime: number; velocity: number; moved: boolean } | null>(null);
+  const suppressClickRef = useRef(false);
+  const wheelLockRef = useRef(0);
+  const [active, setActive] = useState(() => Math.max(0, orderedNotes.length - 1));
+
+  const layout = useCallback((position: number) => {
+    const root = rootRef.current;
+    if (!root) return;
+    const compact = root.clientWidth < 620;
+    const spreadX = compact ? 46 : 90;
+    const readingGap = compact ? 214 : 240;
+    const stackGap = compact ? 37 : 44;
+    cardRefs.current.forEach((card, index) => {
+      if (!card) return;
+      const distance = index - position;
+      const distanceAbs = Math.abs(distance);
+      const x = Math.sin(distance * .65) * spreadX;
+      const y = Math.sign(distance) * (Math.min(1, distanceAbs) * readingGap + Math.max(0, distanceAbs - 1) * stackGap);
+      const z = -distanceAbs * 8;
+      const rotateY = Math.sin(distance * .65) * (compact ? -3 : -5);
+      const rotateZ = Math.sin(distance * .65) * 2;
+      const visible = distanceAbs < 7;
+      const scale = Math.max(.26, Math.exp(-distanceAbs * .30));
+      card.style.transform = `translate(-50%, -50%) translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, ${z.toFixed(2)}px) rotateY(${rotateY.toFixed(2)}deg) rotateZ(${rotateZ.toFixed(2)}deg) scale(${scale.toFixed(3)})`;
+      card.style.opacity = visible ? String(Math.max(0, 1 - distanceAbs * 0.12)) : "0";
+      card.style.filter = `saturate(${Math.max(0.42, 1 - distanceAbs * 0.13).toFixed(3)}) brightness(${Math.min(1.16, 1 + distanceAbs * 0.035).toFixed(3)}) blur(${Math.min(3.8, distanceAbs * 0.78).toFixed(2)}px)`;
+      card.style.zIndex = String(100 - Math.round(distanceAbs * 5));
+      card.style.pointerEvents = visible ? "auto" : "none";
+      card.style.setProperty("--depth-tint", Math.min(0.48, distanceAbs * 0.14).toFixed(3));
+    });
+  }, []);
+
+  const goTo = useCallback((next: number, animate = true) => {
+    if (!orderedNotes.length) return;
+    const target = Math.min(Math.max(next, 0), orderedNotes.length - 1);
+    tweenRef.current?.kill();
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const proxy = { value: positionRef.current };
+    tweenRef.current = gsap.to(proxy, {
+      value: target,
+      duration: animate && !reduceMotion ? 0.28 : 0,
+      ease: "power3.out",
+      overwrite: true,
+      onUpdate: () => { positionRef.current = proxy.value; layout(proxy.value); },
+      onComplete: () => { positionRef.current = target; layout(target); },
+    });
+    setActive(target);
+  }, [layout, orderedNotes.length]);
+
+  useEffect(() => {
+    cardRefs.current = cardRefs.current.slice(0, orderedNotes.length);
+    const safeIndex = Math.min(active, Math.max(0, orderedNotes.length - 1));
+    positionRef.current = safeIndex;
+    setActive(safeIndex);
+    layout(safeIndex);
+  }, [active, layout, orderedNotes.length]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const observer = new ResizeObserver(() => layout(positionRef.current));
+    observer.observe(root);
+    return () => { observer.disconnect(); tweenRef.current?.kill(); };
+  }, [layout]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || orderedNotes.length < 2) return;
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+      if (Math.abs(delta) < 10) return;
+      const now = performance.now();
+      if (now < wheelLockRef.current) return;
+      wheelLockRef.current = now + 280;
+      goTo(Math.round(positionRef.current) + (delta > 0 ? 1 : -1));
+    };
+    root.addEventListener("wheel", handleWheel, { passive: false });
+    return () => root.removeEventListener("wheel", handleWheel);
+  }, [goTo, orderedNotes.length]);
+
+  const endDrag = useCallback(() => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    if (!drag.moved) return;
+    suppressClickRef.current = true;
+    window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+    const projected = positionRef.current - drag.velocity * 210 / Math.max(150, (rootRef.current?.clientHeight ?? 520) * 0.36);
+    goTo(Math.round(projected));
+  }, [goTo]);
+
+  return <section className="received-feed" aria-labelledby="received-title">
+    <div className="section-heading"><h2 id="received-title">收到的纸条</h2><span>共 {notes.length} 条</span></div>
+    {orderedNotes.length ? <div
+      className="note-carousel"
+      ref={rootRef}
+      role="region"
+      aria-roledescription="纸条轮播"
+      aria-label="收到的纸条"
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowUp") { event.preventDefault(); goTo(active - 1, false); }
+        if (event.key === "ArrowDown") { event.preventDefault(); goTo(active + 1, false); }
+      }}
+      onPointerDown={(event) => {
+        if (dragRef.current) return;
+        suppressClickRef.current = false;
+        tweenRef.current?.kill();
+        dragRef.current = { id: event.pointerId, startY: event.clientY, startPosition: positionRef.current, lastY: event.clientY, lastTime: performance.now(), velocity: 0, moved: false };
+      }}
+      onPointerMove={(event) => {
+        const drag = dragRef.current;
+        if (!drag) return;
+        const delta = event.clientY - drag.startY;
+        if (!drag.moved && Math.abs(delta) > 10) { drag.moved = true; event.currentTarget.setPointerCapture(drag.id); }
+        if (!drag.moved) return;
+        const now = performance.now();
+        drag.velocity = (event.clientY - drag.lastY) / Math.max(1, now - drag.lastTime);
+        drag.lastY = event.clientY;
+        drag.lastTime = now;
+        const step = Math.max(150, event.currentTarget.clientHeight * 0.36);
+        const raw = drag.startPosition - delta / step;
+        const min = raw < 0 ? raw * 0.24 : raw;
+        const max = min > orderedNotes.length - 1 ? orderedNotes.length - 1 + (min - orderedNotes.length + 1) * 0.24 : min;
+        positionRef.current = Math.min(orderedNotes.length - 0.72, Math.max(-0.72, max));
+        layout(positionRef.current);
+      }}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+    >
+      <div className="note-carousel-stage">
+        {orderedNotes.map((note, index) => <article
+          className={`carousel-note carousel-note-${index % 4}`}
+          key={note.id}
+          ref={(element) => { cardRefs.current[index] = element; }}
+          aria-hidden={active !== index}
+          onClick={() => { if (!suppressClickRef.current && index !== active) goTo(index); }}
+        >
+          <span className="carousel-tape" aria-hidden="true" />
+          <header><p>{localDate(note.delivered_at)} 收到</p><small className="date-text">写于 {localDate(note.created_at)}</small></header>
+          <p className="carousel-note-body">{note.body}</p>
+          <span className="carousel-depth-tint" aria-hidden="true" />
+        </article>)}
+      </div>
+    </div> : <p className="empty-line">打开过的纸条会留在这里。</p>}
+  </section>;
+}
+
+function Dashboard({ username, partner, timezone, partnerTimezone, client }: { username: string; partner: string; timezone: string; partnerTimezone: string; client: SupabaseClient | null }) {
   const [composeOpen, setComposeOpen] = useState(false), [activeNote, setActiveNote] = useState<Note | null>(null), [unread, setUnread] = useState<UnreadNote[]>([]), [received, setReceived] = useState<Note[]>([]), [pending, setPending] = useState(0), [loadError, setLoadError] = useState("");
   const [myTimezone, setMyTimezone] = useState(timezone);
+  const [showNotificationPrompt, setShowNotificationPrompt] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (activeNote) closeRef.current?.focus(); }, [activeNote]);
+  useEffect(() => { setShowNotificationPrompt("Notification" in window && Notification.permission === "default"); }, []);
   useEffect(() => {
     if (!client) return;
     let cancelled = false;
@@ -321,13 +565,21 @@ function Dashboard({ partner, timezone, partnerTimezone, client }: { partner: st
       const firstError = pendingResult.error ?? unreadResult.error ?? receivedResult.error;
       if (firstError) { setLoadError("纸条暂时没有读出来，请刷新再试。"); return; }
       setPending(Number(pendingResult.data ?? 0));
-      setUnread((unreadResult.data ?? []) as UnreadNote[]);
+      const realUnread = (unreadResult.data ?? []) as UnreadNote[];
+      setUnread(process.env.NODE_ENV === "development" && username === "斯斯" ? [...sisiMockNotes.map(({ id, delivered_at }) => ({ id, delivered_at })), ...realUnread] : realUnread);
       setReceived((receivedResult.data ?? []) as Note[]);
     }
     void load();
     return () => { cancelled = true; };
   }, [client]);
   async function openNote(note: UnreadNote) {
+    const mockNote = process.env.NODE_ENV === "development" && username === "斯斯" ? sisiMockNotes.find((item) => item.id === note.id) : undefined;
+    if (mockNote) {
+      setUnread((items) => items.filter((item) => item.id !== note.id));
+      setReceived((items) => [mockNote, ...items.filter((item) => item.id !== mockNote.id)]);
+      setActiveNote(mockNote);
+      return;
+    }
     if (!client) return;
     setLoadError("");
     const { data, error } = await client.rpc("open_note", { note_id: note.id });
@@ -337,8 +589,8 @@ function Dashboard({ partner, timezone, partnerTimezone, client }: { partner: st
     setReceived((items) => [opened, ...items.filter((item) => item.id !== opened.id)]);
     setActiveNote(opened);
   }
-  async function enableNotifications() { if (!("Notification" in window)) return alert("当前浏览器不支持通知。"); const permission = await Notification.requestPermission(); if (permission !== "granted") alert("通知没有开启，可稍后在浏览器设置中更改。"); }
-  return <main className="desk"><section className="paper" aria-label="我的纸条"><header className="masthead"><h1>纸条</h1><p>你和 <strong>{partner}</strong></p></header><aside className="summary"><p className="relationship">我们的小角落</p><h2>待发送纸条</h2><p className="pending-count"><span>{pending}</span> 条</p><div className="notification-note"><BellIcon /><div><p>打开提醒，新纸条到了就告诉你。</p><button className="text-button" onClick={enableNotifications}>去打开提醒</button><p className="ios-note">用 iPhone 的话，先在 Safari 里添加到主屏幕哦。</p></div></div></aside><div className="ledger">{loadError && <p className="dashboard-error" role="alert">{loadError}</p>}<section className="note-section"><div className="section-heading"><h2>未读纸条</h2><span>共 {unread.length} 条</span></div>{unread.length ? unread.map((note) => <div className="unread-row" key={note.id}><time dateTime={note.delivered_at}>{localDate(note.delivered_at)}</time><button className="open-button" onClick={() => void openNote(note)}>打开</button></div>) : <p className="empty-line">这里暂时空空的，晚点再来看看吧。</p>}</section><section className="note-section"><div className="section-heading"><h2>收到的纸条</h2><span>共 {received.length} 条</span></div>{received.length ? received.map((note) => <article className="received-note" key={note.id}><dl><div><dt>写下</dt><dd className="date-text">{localDate(note.created_at)}</dd></div><div><dt>送达</dt><dd className="date-text">{localDate(note.delivered_at)}</dd></div></dl><p>{note.body}</p></article>) : <p className="empty-line">打开过的纸条会留在这里。</p>}</section></div><button className="compose-tab" onClick={() => setComposeOpen(true)}><span>留一张纸条</span></button><TimeZoneSettings client={client} initialTimezone={myTimezone} onSaved={setMyTimezone} /></section>{activeNote && <NoteDialog note={activeNote} close={() => setActiveNote(null)} closeRef={closeRef} />}{composeOpen && <ComposeDialog client={client} partner={partner} senderTimezone={myTimezone} partnerTimezone={partnerTimezone} close={() => setComposeOpen(false)} sealed={() => { setPending((value) => value + 1); setComposeOpen(false); }} />}</main>;
+  async function enableNotifications() { if (!("Notification" in window)) return; const permission = await Notification.requestPermission(); setShowNotificationPrompt(false); if (permission !== "granted") alert("通知没有开启，可稍后在浏览器设置中更改。"); }
+  return <main className="desk"><section className="paper" aria-label="我的纸条"><header className="masthead"><h1>纸条</h1><p>你和 <strong>{partner}</strong></p></header><aside className="summary"><p className="relationship">我们的小角落</p><h2>待发送纸条</h2><p className="pending-count"><span>{pending}</span> 条</p><button className="compose-tab" onClick={() => setComposeOpen(true)}><span>留一张纸条</span></button>{showNotificationPrompt && <div className="notification-note"><BellIcon /><div><p>打开提醒，新纸条到了就告诉你。</p><button className="text-button" onClick={enableNotifications}>去打开提醒</button><p className="ios-note">用 iPhone 的话，先在 Safari 里添加到主屏幕哦。</p></div></div>}</aside><div className="ledger">{loadError && <p className="dashboard-error" role="alert">{loadError}</p>}<UnreadDrawer notes={unread} open={(note) => void openNote(note)} /><ReceivedFeed notes={received} /></div><TimeZoneSettings client={client} initialTimezone={myTimezone} onSaved={setMyTimezone} /></section>{activeNote && <NoteDialog note={activeNote} close={() => setActiveNote(null)} closeRef={closeRef} />}{composeOpen && <ComposeDialog client={client} partner={partner} senderTimezone={myTimezone} partnerTimezone={partnerTimezone} close={() => setComposeOpen(false)} sealed={() => { setPending((value) => value + 1); setComposeOpen(false); }} />}</main>;
 }
 
 function TimeZoneSettings({ client, initialTimezone, onSaved }: { client: SupabaseClient | null; initialTimezone: string; onSaved: (timezone: string) => void }) {
@@ -354,7 +606,7 @@ function TimeZoneSettings({ client, initialTimezone, onSaved }: { client: Supaba
   return <section className="timezone-settings" aria-labelledby="timezone-settings-title"><div><h2 id="timezone-settings-title">我的所在地区</h2><p>当前时间：<span className="date-text">{timeInZone(timezone)}</span></p></div><TimeZoneField value={timezone} onChange={(value) => { setTimezone(value); setStatus(""); }} label="选择或更换所在地区" /><button type="button" className="timezone-save" onClick={() => void save()}>保存地区</button>{status && <p className="timezone-status" role="status">{status}</p>}</section>;
 }
 
-function NoteDialog({ note, close, closeRef }: { note: Note; close: () => void; closeRef: React.RefObject<HTMLButtonElement | null> }) { return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && close()}><section className="note-dialog" role="dialog" aria-modal="true" aria-labelledby="note-title"><button ref={closeRef} className="close-button" onClick={close} aria-label="关闭">×</button><h2 id="note-title">纸条到啦</h2><p className="dialog-body">{note.body}</p><dl className="dialog-dates"><div><dt>写下</dt><dd className="date-text">{localDateTime(note.created_at)}</dd></div><div><dt>送达</dt><dd className="date-text">{localDateTime(note.delivered_at)}</dd></div></dl></section></div>; }
+function NoteDialog({ note, close, closeRef }: { note: Note; close: () => void; closeRef: React.RefObject<HTMLButtonElement | null> }) { return <div className="modal-backdrop note-backdrop bounce-note-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && close()}><section className="note-dialog bounce-note-dialog" role="dialog" aria-modal="true" aria-label="收到的纸条"><button ref={closeRef} className="close-button" onClick={close} aria-label="关闭">×</button><p className="dialog-body">{note.body}</p><dl className="dialog-dates"><div><dt>写下</dt><dd className="date-text">{localDateTime(note.created_at)}</dd></div><div><dt>送达</dt><dd className="date-text">{localDateTime(note.delivered_at)}</dd></div></dl></section></div>; }
 
 function ComposeDialog({ client, partner, senderTimezone, partnerTimezone, close, sealed }: { client: SupabaseClient | null; partner: string; senderTimezone: string; partnerTimezone: string; close: () => void; sealed: () => void }) {
   const [mode, setMode] = useState<"fixed" | "random">("fixed"), [basis, setBasis] = useState<"days" | "date">("days"), [body, setBody] = useState(""), [days, setDays] = useState("0"), [date, setDate] = useState(() => new Date().toLocaleDateString("en-CA")), [time, setTime] = useState("21:30"), [randomWindow, setRandomWindow] = useState("7"), [confirming, setConfirming] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState("");

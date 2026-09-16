@@ -1,0 +1,8 @@
+.received-feed .note-carousel{height:900px}
+.received-feed .carousel-note{width:min(440px,68%);height:342px;padding:36px 30px 28px}
+.received-feed .note-carousel::before{background:linear-gradient(180deg,var(--sheet) 0,transparent 17%,transparent 83%,var(--sheet) 100%)}
+@media(max-width:760px){
+  .received-feed .note-carousel{height:800px;margin:12px 0 0}
+  .received-feed .carousel-note{width:72%;height:300px;padding:30px 20px 24px}
+  .received-feed .carousel-note-body{font-size:18px;max-height:174px}
+}
