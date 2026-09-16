@@ -556,9 +556,26 @@ function Dashboard({ username, partner, timezone, partnerTimezone, client }: { u
   const [composeOpen, setComposeOpen] = useState(false), [activeNote, setActiveNote] = useState<Note | null>(null), [unread, setUnread] = useState<UnreadNote[]>([]), [received, setReceived] = useState<Note[]>([]), [pending, setPending] = useState(0), [loadError, setLoadError] = useState("");
   const [myTimezone, setMyTimezone] = useState(timezone);
   const [showNotificationPrompt, setShowNotificationPrompt] = useState(false);
+  const [receivedOpen, setReceivedOpen] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (activeNote) closeRef.current?.focus(); }, [activeNote]);
   useEffect(() => { setShowNotificationPrompt("Notification" in window && Notification.permission === "default"); }, []);
+  useEffect(() => {
+    const closeReceived = () => setReceivedOpen(false);
+    window.addEventListener("popstate", closeReceived);
+    return () => window.removeEventListener("popstate", closeReceived);
+  }, []);
+  useEffect(() => {
+    if (!receivedOpen) return;
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+    };
+  }, [receivedOpen]);
   useEffect(() => {
     if (!client) return;
     let cancelled = false;
@@ -597,7 +614,16 @@ function Dashboard({ username, partner, timezone, partnerTimezone, client }: { u
     setActiveNote(opened);
   }
   async function enableNotifications() { if (!("Notification" in window)) return; const permission = await Notification.requestPermission(); setShowNotificationPrompt(false); if (permission !== "granted") alert("通知没有开启，可稍后在浏览器设置中更改。"); }
-  return <main className="desk"><section className="paper" aria-label="我的纸条"><header className="masthead"><h1>纸条</h1><p>你和 <strong>{partner}</strong></p></header><aside className="summary"><p className="relationship">我们的小角落</p><h2>待发送纸条</h2><p className="pending-count"><span>{pending}</span> 条</p><button className="compose-tab" onClick={() => setComposeOpen(true)}><span>留一张纸条</span></button>{showNotificationPrompt && <div className="notification-note"><BellIcon /><div><p>打开提醒，新纸条到了就告诉你。</p><button className="text-button" onClick={enableNotifications}>去打开提醒</button><p className="ios-note">用 iPhone 的话，先在 Safari 里添加到主屏幕哦。</p></div></div>}</aside><div className="ledger">{loadError && <p className="dashboard-error" role="alert">{loadError}</p>}<UnreadDrawer notes={unread} open={(note) => void openNote(note)} /><ReceivedFeed notes={received} /></div><TimeZoneSettings client={client} initialTimezone={myTimezone} onSaved={setMyTimezone} /></section>{activeNote && <NoteDialog note={activeNote} close={() => setActiveNote(null)} closeRef={closeRef} />}{composeOpen && <ComposeDialog client={client} partner={partner} senderTimezone={myTimezone} partnerTimezone={partnerTimezone} close={() => setComposeOpen(false)} sealed={() => { setPending((value) => value + 1); setComposeOpen(false); }} />}</main>;
+  function openReceived() {
+    window.history.pushState({ receivedNotes: true }, "", "#received");
+    setReceivedOpen(true);
+  }
+  function closeReceived() {
+    if (window.location.hash === "#received") window.history.back();
+    else setReceivedOpen(false);
+  }
+  if (receivedOpen) return <main className="received-browser-page" aria-label="收到的纸条浏览页"><header className="received-browser-header"><button type="button" className="received-back" onClick={closeReceived} aria-label="返回我的纸条"><span aria-hidden="true">←</span> 返回</button><div><h1>收到的纸条</h1><p>共 {received.length} 条</p></div></header><ReceivedFeed notes={received} /></main>;
+  return <main className="desk"><section className="paper" aria-label="我的纸条"><header className="masthead"><h1>纸条</h1><p>你和 <strong>{partner}</strong></p></header><aside className="summary"><p className="relationship">我们的小角落</p><h2>待发送纸条</h2><p className="pending-count"><span>{pending}</span> 条</p><button className="compose-tab" onClick={() => setComposeOpen(true)}><span>留一张纸条</span></button>{showNotificationPrompt && <div className="notification-note"><BellIcon /><div><p>打开提醒，新纸条到了就告诉你。</p><button className="text-button" onClick={enableNotifications}>去打开提醒</button><p className="ios-note">用 iPhone 的话，先在 Safari 里添加到主屏幕哦。</p></div></div>}</aside><div className="ledger">{loadError && <p className="dashboard-error" role="alert">{loadError}</p>}<UnreadDrawer notes={unread} open={(note) => void openNote(note)} /><button type="button" className="received-entry" onClick={openReceived}><span><strong>收到的纸条</strong><small>打开纸条浏览页</small></span><span className="received-entry-count">共 {received.length} 条</span><span className="received-entry-arrow" aria-hidden="true">→</span></button></div><TimeZoneSettings client={client} initialTimezone={myTimezone} onSaved={setMyTimezone} /></section>{activeNote && <NoteDialog note={activeNote} close={() => setActiveNote(null)} closeRef={closeRef} />}{composeOpen && <ComposeDialog client={client} partner={partner} senderTimezone={myTimezone} partnerTimezone={partnerTimezone} close={() => setComposeOpen(false)} sealed={() => { setPending((value) => value + 1); setComposeOpen(false); }} />}</main>;
 }
 
 function TimeZoneSettings({ client, initialTimezone, onSaved }: { client: SupabaseClient | null; initialTimezone: string; onSaved: (timezone: string) => void }) {
