@@ -1,9 +1,9 @@
-.received-feed .note-carousel{height:900px}
+.received-feed .note-carousel{height:760px}
 .received-feed .carousel-note{width:min(360px,60%);height:280px;padding:28px 24px 22px;filter:none;will-change:transform,opacity}
 .received-feed .carousel-note-body{max-height:158px;font-size:18px;line-height:1.7}
 .received-feed .note-carousel::before{background:linear-gradient(180deg,var(--sheet) 0,transparent 17%,transparent 83%,var(--sheet) 100%)}
 @media(max-width:760px){
-  .received-feed .note-carousel{height:800px;margin:12px 0 0}
+  .received-feed .note-carousel{height:680px;margin:12px 0 0}
   .received-feed .carousel-note{width:62%;height:248px;padding:26px 16px 20px}
   .received-feed .carousel-note-body{font-size:17px;line-height:1.65;max-height:124px;margin-top:12px}
 }
